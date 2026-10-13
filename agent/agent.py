@@ -75,20 +75,19 @@ AGENT_TOOLS = ["add_emoji_reaction"]
 # settings.json) so it scopes to the Claude AI bot only — the other kit bots +
 # your own Claude Code keep whatever ANTHROPIC_MODEL the shell exports.
 #
-# DEFAULT = Sonnet 5. We WANTED Haiku for speed/cost, but a direct probe of the
-# preprod SF gateway (team 8f1b249e…, 2026-09-10) showed it is entitled to ONLY
-# `us.anthropic.claude-sonnet-5` (+ Sonnet-4); every Haiku 4.5 id 401s ("Team not
-# allowed"), and the one Haiku ARN that authenticates silently reroutes to
-# Sonnet-4. So there is no real Haiku to switch to on this gateway. Sonnet 5 is
-# the fastest clean model available here and never 401-hangs.
+# TEMPLATE DEFAULT is the public model id `claude-haiku-4-5` (works with any
+# SE's own `claude` login) — fast/cheap, which fits a demo bot's short replies.
+# Override at launch with CLAUDE_AI_MODEL=<id> for a more capable model (e.g.
+# claude-sonnet-5) — no code edit needed. The startup self-check (see
+# log_model_check) surfaces a 401 or a silent reroute in the init log.
 #
-# Override at launch with CLAUDE_AI_MODEL=<id> the moment Haiku is entitled (or in
-# a prod gateway that offers it) — no code edit needed. The startup self-check
-# (see log_model_check) surfaces a 401 or a silent reroute in the init log.
-# TEMPLATE DEFAULT is the public model id `claude-sonnet-5` (works with any SE's
-# own `claude` login). Internal SEs on the Salesforce Bedrock gateway override
-# with CLAUDE_AI_MODEL=us.anthropic.claude-sonnet-5 (or rely on ~/.claude/settings.json).
-CLAUDE_AI_MODEL = os.environ.get("CLAUDE_AI_MODEL", "claude-sonnet-5")
+# Internal SEs on the Salesforce Bedrock gateway: a 2026-09-10 probe of the
+# preprod gateway (team 8f1b249e…) showed every Haiku 4.5 id either 401s
+# ("Team not allowed") or silently reroutes to Sonnet-4 — only
+# `us.anthropic.claude-sonnet-5` (+ Sonnet-4) is entitled there. On that
+# gateway, override with CLAUDE_AI_MODEL=us.anthropic.claude-sonnet-5 (or rely
+# on ~/.claude/settings.json) until Haiku is entitled.
+CLAUDE_AI_MODEL = os.environ.get("CLAUDE_AI_MODEL", "claude-haiku-4-5")
 
 
 async def run_agent(
