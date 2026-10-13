@@ -81,12 +81,17 @@ AGENT_TOOLS = ["add_emoji_reaction"]
 # claude-sonnet-5) — no code edit needed. The startup self-check (see
 # log_model_check) surfaces a 401 or a silent reroute in the init log.
 #
-# Internal SEs on the Salesforce Bedrock gateway: a 2026-09-10 probe of the
-# preprod gateway (team 8f1b249e…) showed every Haiku 4.5 id either 401s
-# ("Team not allowed") or silently reroutes to Sonnet-4 — only
-# `us.anthropic.claude-sonnet-5` (+ Sonnet-4) is entitled there. On that
-# gateway, override with CLAUDE_AI_MODEL=us.anthropic.claude-sonnet-5 (or rely
-# on ~/.claude/settings.json) until Haiku is entitled.
+# Internal SEs on the Salesforce Bedrock gateway: entitlement has changed
+# since the original 2026-09-10 probe (which found every Haiku 4.5 id either
+# 401ing or silently rerouting to Sonnet-4). Re-probed 2026-10-13 — the DATED
+# Bedrock id now works clean: us.anthropic.claude-haiku-4-5-20251001-v1:0 → 200,
+# response `model` field echoes `anthropic.claude-haiku-4-5-20251001-v1:0` (real
+# Haiku, not a reroute). Use that dated id, not either of these:
+#   - us.anthropic.claude-haiku-4-5 (undated)   → still 401s "Team not allowed"
+#   - us.anthropic.claude-3-5-haiku-20241022-v1:0 → still silently reroutes to Sonnet-4
+# Override with CLAUDE_AI_MODEL=us.anthropic.claude-haiku-4-5-20251001-v1:0 (or
+# rely on ~/.claude/settings.json). If entitlement changes again, the startup
+# self-check (log_model_check) will surface a 401 or reroute in the init log.
 CLAUDE_AI_MODEL = os.environ.get("CLAUDE_AI_MODEL", "claude-haiku-4-5")
 
 
