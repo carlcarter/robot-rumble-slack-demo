@@ -4,6 +4,18 @@
 
 **Length:** about 5 minutes. **Presenter:** one SE per location, each running it independently in their own channel. No help-me channels and no hand-offs between Edinburgh and London.
 
+## Two modes
+
+| | **Scripted** (`SCRIPTED_ONLY=1` in `.env`) | **Live** (`SCRIPTED_ONLY=` blank) |
+|---|---|---|
+| Agent's replies | Pre-written (`SCRIPTED_REPLIES` in `scenarios/robot_red_card.py`) | Your local Claude Code login |
+| Needs | Python + `tokens.json`. Nothing else | Your Mac, your gateway sign-in |
+| Can host on | Anything always-on: a server, a Pi, a spare Mac | Your Mac only |
+| Unscripted questions | A pre-written answer if the question matches; otherwise a polite "I can do the runbook steps" | Real answers; can build new things |
+| Same story on screen? | Yes. Every step in the table below is identical in both modes | Yes |
+
+The scripted steps (diff, replay, patch, numbers, recap, the team's lines) never use the model in either mode. The mode only changes the agent's own sentences. `run.sh` prints which mode it's in when it starts.
+
 ## One-time setup (per presenter)
 
 1. In Slack, create your own channel, e.g. `#rr-demo-edi` (or open a Slack Code channel if you have one).

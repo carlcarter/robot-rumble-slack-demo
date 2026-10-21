@@ -35,9 +35,34 @@ if [ -z "$WORKSPACE_ID" ] || [ -z "$APP_ID" ]; then
 fi
 NAME="$(python3 -c "import json;b=json.load(open('tokens.json'))['bots'];print(next(iter(b.values())).get('name','Claude AI'))")"
 
-if [ ! -f "$HOME/.slack/credentials.json" ]; then
+# SCRIPTED_ONLY can be set in the environment or in .env.
+if [ -z "${SCRIPTED_ONLY:-}" ] && [ -f .env ]; then
+  SCRIPTED_ONLY="$(sed -n 's/^SCRIPTED_ONLY=//p' .env | tail -1)"
+fi
+case "$(printf '%s' "${SCRIPTED_ONLY:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on) SCRIPTED=1 ;;
+  *) SCRIPTED="" ;;
+esac
+
+if [ -z "$SCRIPTED" ] && [ -n "${RUN_VIA_SLACK_CLI:-}" ] && [ ! -f "$HOME/.slack/credentials.json" ]; then
   echo "[run.sh] ERROR: ~/.slack/credentials.json not found. Run \`slack login\` first (see SETUP.md)." >&2
   exit 1
+fi
+
+if [ -n "$SCRIPTED" ]; then
+  # Scripted-only: no model, no Claude login, no Slack CLI. Just the bot and its
+  # two Slack tokens, so it runs on any always-on host.
+  export SCRIPTED_ONLY=1
+  eval "$(python3 -c "
+import json, shlex
+b = next(iter(json.load(open('tokens.json'))['bots'].values()))
+print('export SLACK_BOT_TOKEN=' + shlex.quote(b['bot_token']))
+print('export SLACK_APP_TOKEN=' + shlex.quote(b['app_token']))
+")"
+  echo "[run.sh] SCRIPTED_ONLY: no model, no Claude login — running as app $APP_ID ($NAME)."
+  PY="$ROOT/.venv/bin/python"
+  [ -x "$PY" ] || PY=python3
+  exec "$PY" app.py
 fi
 
 # ----------------------------------------------------------------------------
@@ -62,10 +87,11 @@ fi
 # Raise the Agent SDK initialize handshake timeout (ms); no-op when init is fast.
 export CLAUDE_CODE_STREAM_CLOSE_TIMEOUT="${CLAUDE_CODE_STREAM_CLOSE_TIMEOUT:-180000}"
 
-# Background: after the CLI boots, reconcile the live manifest against manifest.json
-# (re-add code_channels + bot scopes/events the CLI's manifest hook strips) and set
-# the display name. Best-effort; never blocks the run.
-(
+# Background (slack run only): after the CLI boots, reconcile the live manifest
+# against manifest.json (re-add code_channels + bot scopes/events the CLI's
+# manifest hook strips) and set the display name. Best-effort; never blocks the
+# run. Skipped in direct mode, which doesn't touch the app's manifest.
+[ -n "${RUN_VIA_SLACK_CLI:-}" ] && (
   sleep 10
   TOKEN=$(WORKSPACE_ID="$WORKSPACE_ID" python3 -c "
 import json, os, sys

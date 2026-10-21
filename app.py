@@ -16,7 +16,9 @@ from slack_sdk.web.async_client import AsyncWebClient  # noqa: E402
 from agent.agent import log_model_check  # noqa: E402
 from listeners import register_listeners  # noqa: E402
 
-logging.basicConfig(level=logging.DEBUG)
+# DEBUG by default (local dev). On a host, LOG_LEVEL=INFO drops the Socket Mode
+# PING/PONG noise from the logs.
+logging.basicConfig(level=getattr(logging, os.environ.get("LOG_LEVEL", "DEBUG").upper(), logging.DEBUG))
 
 app = AsyncApp(
     token=os.environ.get("SLACK_BOT_TOKEN"),

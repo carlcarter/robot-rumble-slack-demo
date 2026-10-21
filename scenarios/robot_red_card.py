@@ -387,6 +387,41 @@ def render_provenance() -> str:
     return "\n".join(lines)
 
 
+# --- Scripted-only replies (SCRIPTED_ONLY=1: no model) --------------------------
+# Stand-ins for the agent's live text. "open" is its first message after the
+# trigger; "answers" are (keywords, reply) pairs for an unscripted @mention,
+# first match wins; "fallback" is everything else. Reuses provenance() so the
+# "why" answers say exactly what the live agent would be primed with.
+_P = provenance()
+SCRIPTED_REPLIES = {
+    "open": (
+        "On it. First pass: red now halts on the *first* colour read instead of waiting for "
+        f"3 in a row, so the robot stops before it rolls onto the card. Change is in "
+        f"`line_follower.py` on `{STAGE_BRANCH}`, with tests. Priya, it's ready for Morgan's replay "
+        "before it goes anywhere near Callum."
+    ),
+    "answers": [
+        (("debounce", "confirm", "keep"), _P["keep_the_debounce"]),
+        (("crawl", "slow", "soft stop"), _P["crawl_then_confirm"]),
+        (("sweep", "straight", "search"), _P["drive_straight_not_sweep"]),
+        (("params", "config", "tune", "redeploy"), _P["config_not_code"]),
+        (("first pass", "first attempt", "why did you halt", "first read"), _P["first_pass_halt_on_first_read"]),
+        (("deploy", "merge", "ship", "live on the robot"), (
+            "Not by me. The change sits on a branch until a person merges it and resumes the robot. "
+            "Priya reviews, Callum signs off."
+        )),
+        (("who", "approve", "review"), (
+            "Priya Nair reviews the code, Callum Reid signs off for track safety, and Morgan Ellis "
+            "owns the replay data. I write the change and the tests."
+        )),
+    ],
+    "fallback": (
+        "Good question, but it's outside what I've got on hand for this run. I can run the track "
+        "replay, patch it, show the numbers or write the postmortem."
+    ),
+}
+
+
 # --- Thinking-pulse lines -------------------------------------------------------
 _THINKING = {
     "open": "Reading the red-card thread and the debounce in line_follower.py…",

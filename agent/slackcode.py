@@ -1398,6 +1398,9 @@ def clear_recap_canvas_id(channel_id: str) -> None:
 # channel (unlike a code channel, plain messages are left alone), so the room can
 # chat freely. DURABLE: the channel stays a stage after a bot restart.
 _STAGE_CHANNELS: set[str] = set(_STATE.get("stage", []))
+# Hosts with a wiped disk on restart (Heroku restarts dynos daily) lose the state
+# file, so stage channels can also be pinned by config: STAGE_CHANNEL_IDS=C0…,C0…
+_STAGE_CHANNELS |= {c.strip() for c in os.environ.get("STAGE_CHANNEL_IDS", "").split(",") if c.strip()}
 
 
 def mark_stage_channel(channel_id: str) -> None:
