@@ -1,5 +1,26 @@
 # Slack Code Demo Generator
 
+> **Robot Rumble fork.** This copy (branch `robot-rumble`) adds the **red-card
+> story**: when a robot's critical fault needs a code change, a team (robotics
+> engineer, safety lead, telemetry analyst) and the coding agent review and fix
+> the robot's `line_follower.py` together in Slack, with a failed replay,
+> a patch and a sign-off. It runs **fully scripted on Heroku** (no Claude login),
+> in any channel the bot is invited to.
+>
+> - **Event day:** [docs/robot-rumble/RUNBOOK.md](docs/robot-rumble/RUNBOOK.md) — morning start-up, the five messages to post, shutdown, troubleshooting
+> - **Setup / rebuild:** [docs/robot-rumble/SETUP.md](docs/robot-rumble/SETUP.md)
+> - **The story:** [scenarios/robot_red_card.py](scenarios/robot_red_card.py)
+>
+> What the fork changes in the generator: up to 4 scripted people, with review
+> beats after the check, patch and recap (`on_check_fail`, `on_check_pass`,
+> `on_patch`, `on_recap`); **stage mode**, where a trigger runs the story in the
+> channel it was posted in and re-triggering resets it; **`SCRIPTED_ONLY=1`**,
+> which replaces every model call with a pre-written reply; and filtering so the
+> bot ignores other agents (e.g. Pit Crew) and messages addressed to them.
+> `run.sh` runs `app.py` directly with the app in `tokens.json`. A `Procfile`
+> and `.python-version` support Heroku. The rest of this README is the upstream
+> generator's.
+
 A demo-building tool for Slack SEs. It generates convincing, fully-scripted
 **Slack Code** demos you run in *your own* demo org, tailored to *your*
 customer — plus the conversational **Claude Tag** surface when you need it.

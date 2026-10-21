@@ -60,7 +60,7 @@ Only ask for what Step 0 didn't already give you. Ask, don't assume:
 2. **Product / domain** the demo centers on.
 3. **The technical change** Claude will appear to make (a redesign, a refactor,
    an incident fix, a migration, a new feature…).
-4. **The cast** — 1–2 people who appear in the origin thread (name + role).
+4. **The cast** — 1–4 people who appear in the origin thread (name + role).
    Names alone are enough: every line is posted through the bot spoofing that
    name + avatar, so the backstory renders in any org without those people
    existing. Then offer the OPTIONAL roster invite, in these words:
@@ -115,9 +115,16 @@ Required for a scripted (seeded) scenario:
   (the dict flattened to `- key: why` lines).
 - `thinking_line(action)` for `check/patch/metrics/recap`, backed by a `_THINKING`
   dict that MUST include a non-generic `"open"` line (the session-start spinner).
-- `PARTICIPANTS: list[dict]` (1–2, each `{name, email_stem, role}`) and
-  `participant_beats() -> list[dict]` (each `{name, phase, text}`,
-  `phase ∈ {"arrival","on_artifacts"}`, ≥1 `arrival`, no `**`).
+- `PARTICIPANTS: list[dict]` (1–4, each `{name, email_stem, role}`) and
+  `participant_beats() -> list[dict]` (each `{name, phase, text}`, ≥1 `arrival`,
+  no `**`). `phase` is one of `slack_code.BEAT_PHASES`: `"arrival"`,
+  `"on_artifacts"`, or a review-loop phase fired after that beat —
+  `"on_check_fail"`, `"on_check_pass"`, `"on_patch"`, `"on_recap"`. Beats in one
+  phase post in order, a short gap apart, so two people can trade lines (see
+  `scenarios/robot_red_card.py` for a reviewer + approver loop).
+- Optional: `SCRIPTED_REPLIES` (`{"open", "answers", "fallback"}`) — the agent's
+  lines when the bot runs with `SCRIPTED_ONLY=1` (no model). Without it, scripted
+  mode uses a neutral fallback line.
 
 Conditional on `ARTIFACTS`:
 - if `"dashboard"`: `dashboard_blocks() -> list[dict]` (valid Block Kit — validate
