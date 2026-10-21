@@ -118,7 +118,7 @@ def thinking_line(action: str) -> str:
 #                slack-corp.com and resolves it (users.lookupByEmail) to also
 #                invite the real person to the roster. Portable — only the org
 #                number varies, and it's derived from the bot's team url.
-# Keep to ≤2 people; each beat's `name` must be one of these. Voice should match
+# Keep to ≤4 people; each beat's `name` must be one of these. Voice should match
 # what the person already said in the origin seed thread.
 PARTICIPANTS: list[dict] = [
     # {"name": "Ralph", "email_stem": "ralph_clark", "role": "on-call SRE"},
@@ -127,8 +127,11 @@ PARTICIPANTS: list[dict] = [
 
 def participant_beats() -> list[dict]:
     """Scripted human chime-ins. `phase`: "arrival" (fires as the channel opens —
-    the stall while Claude's first reply loads) or "on_artifacts" (fires just after
-    the diff/dashboard publish — reacting to what shipped). Return [] for none."""
+    the stall while Claude's first reply loads), "on_artifacts" (fires just after
+    the diff/dashboard publish — reacting to what shipped), or a review-loop phase
+    fired after the matching beat: "on_check_fail", "on_check_pass", "on_patch",
+    "on_recap". Beats in one phase post in order, a short gap apart. Return [] for
+    none."""
     return [
         # {"name": "Ralph", "phase": "arrival", "text": ":eyes: Following — …"},
         # {"name": "Elliott", "phase": "on_artifacts", "text": "Diff's up already — …"},

@@ -95,6 +95,70 @@ AGENT_TOOLS = ["add_emoji_reaction"]
 CLAUDE_AI_MODEL = os.environ.get("CLAUDE_AI_MODEL", "claude-haiku-4-5")
 
 
+def _auth_only_settings() -> str | None:
+    """The `apiKeyHelper` from ~/.claude/settings.json, as a --settings JSON string.
+
+    Agent calls run with setting_sources=[] (a clean, fast boot), so the CLI never
+    reads settings.json. On gateways that authenticate through an apiKeyHelper
+    (rather than a key in env), that leaves the CLI with no credentials and every
+    reply is "Not logged in · Please run /login". Passing ONLY the helper keeps the
+    clean boot (no hooks, plugins or MCP servers) and restores auth. None when the
+    file or the key is absent. The helper command is never logged."""
+    import json
+
+    path = Path.home() / ".claude" / "settings.json"
+    try:
+        helper = json.loads(path.read_text(encoding="utf-8")).get("apiKeyHelper")
+    except Exception:  # noqa: BLE001 — no settings file → plain login/env auth
+        return None
+    return json.dumps({"apiKeyHelper": helper}) if helper else None
+
+
+AUTH_SETTINGS = _auth_only_settings()
+
+
+# ---------------------------------------------------------------------------
+# Scripted-only mode: no model, no CLI, no tools — runs on any host
+# ---------------------------------------------------------------------------
+# SCRIPTED_ONLY=1 replaces EVERY live agent call with a canned reply, at this one
+# choke point (run_agent / run_agent_offloop), so no handler can reach the model
+# by accident. The scripted beats (diff, check, patch, numbers, recap, chime-ins)
+# never called the model anyway; this covers the rest: the agent's opening line
+# and any unscripted question. Replies come from the scenario's SCRIPTED_REPLIES
+# when it has them, else a neutral line. Needs no Claude login, so the bot can
+# be hosted on a server or a Pi.
+def scripted_only() -> bool:
+    return os.environ.get("SCRIPTED_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_SCRIPTED_FALLBACK = (
+    "I'm running the scripted version of this demo, so I can only do the steps in the "
+    "runbook. Ask me to run the check, patch it, show the numbers or write the postmortem."
+)
+
+
+def scripted_reply(text: str) -> str:
+    """The canned reply for a live-agent prompt in scripted-only mode.
+
+    The opening turn (the session start prompt carries "The task:") gets the
+    scenario's "open" reply. Anything else is matched against the scenario's
+    ordered (keywords, reply) pairs, first hit wins, else the neutral fallback."""
+    from scenarios import load_scenario  # local: agent must not import scenarios at module load
+
+    slug = os.environ.get("SCRIPTED_SCENARIO") or "robot_red_card"
+    replies = getattr(load_scenario(slug), "SCRIPTED_REPLIES", {}) or {}
+    if "The task:" in text and replies.get("open"):
+        return replies["open"]
+    low = text.lower()
+    # Only look at the person's actual question, not the context prepended to it.
+    if "Request:" in text:
+        low = text.rsplit("Request:", 1)[1].lower()
+    for keywords, reply in replies.get("answers", []):
+        if any(k in low for k in keywords):
+            return reply
+    return replies.get("fallback") or _SCRIPTED_FALLBACK
+
+
 async def run_agent(
     text: str,
     session_id: str | None = None,
@@ -120,6 +184,8 @@ async def run_agent(
     Returns:
         A tuple of (response_text, new_session_id).
     """
+    if scripted_only():
+        return scripted_reply(text), None
     if deps:
         agent_deps_var.set(deps)
 
@@ -162,6 +228,8 @@ async def run_agent(
         # wire explicitly above (mcp_servers/allowed_tools) nor the env
         # (Bedrock auth + ANTHROPIC_MODEL) the shell exports — both survive.
         setting_sources=[],
+        # …except the gateway auth helper, without which the CLI isn't logged in.
+        settings=AUTH_SETTINGS,
     )
 
     if session_id:
@@ -237,6 +305,9 @@ async def run_agent_offloop(
     propagate across the thread boundary). The Slack reply is posted by the CALLER
     on the main loop from the returned text, not from this thread.
     """
+    if scripted_only():
+        return scripted_reply(text), None
+
     def _worker() -> tuple[str, str | None]:
         return asyncio.run(
             run_agent(
@@ -264,6 +335,9 @@ async def log_model_check() -> None:
     absent. Runs a tiny 1-token invoke against the SAME base URL the CLI uses.
     """
     log = logging.getLogger("claude-ai-bot")
+    if scripted_only():
+        log.warning("SCRIPTED_ONLY=1: no model, no Claude CLI — every reply is scripted.")
+        return
     base = os.environ.get("ANTHROPIC_BEDROCK_BASE_URL")
     token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
     if not (os.environ.get("CLAUDE_CODE_USE_BEDROCK") and base and token):

@@ -1092,6 +1092,8 @@ class SlackCodeConfig:
         "flaky", "flake", "login_redirect",
         # sql_migration openers
         "migration", "add a column", "add a last_login", "last_login_at", "backfill",
+        # robot_red_card openers
+        "red card", "red-card", "line_follower", "late stop", "stop sooner",
     ])
     channel_name_prefix: str = "claude-"
     fake_repo: str = "acme/billing-service"
@@ -1250,6 +1252,7 @@ def _save_state() -> None:
             "artifact": _CHANNEL_ARTIFACT,
             "scenario": _CHANNEL_SCENARIO,
             "recap_canvas": _CHANNEL_RECAP_CANVAS,
+            "stage": sorted(_STAGE_CHANNELS),
         }
         tmp = f"{_STATE_PATH}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -1382,6 +1385,41 @@ def get_recap_canvas_id(channel_id: str) -> str | None:
 def clear_recap_canvas_id(channel_id: str) -> None:
     """Drop the stored recap canvas id (fresh session)."""
     _CHANNEL_RECAP_CANVAS.pop(channel_id, None)
+    _save_state()
+
+
+# ---------------------------------------------------------------------------
+# Presenter-owned stage channels (run a scripted story in a channel YOU made)
+# ---------------------------------------------------------------------------
+# For a single presenter running the same story many times a day: they create an
+# ordinary channel, invite the bot, and @mention it with a story trigger. The
+# whole session runs IN that channel — no new code channel is spawned — and a
+# later trigger restarts the story there. Only @mentions are handled in a stage
+# channel (unlike a code channel, plain messages are left alone), so the room can
+# chat freely. DURABLE: the channel stays a stage after a bot restart.
+_STAGE_CHANNELS: set[str] = set(_STATE.get("stage", []))
+
+
+def mark_stage_channel(channel_id: str) -> None:
+    """Record that `channel_id` is a presenter-owned stage channel."""
+    if channel_id and channel_id not in _STAGE_CHANNELS:
+        _STAGE_CHANNELS.add(channel_id)
+        _save_state()
+
+
+def is_stage_channel(channel_id: str) -> bool:
+    """True if a scripted story has been started in this ordinary channel."""
+    return channel_id in _STAGE_CHANNELS
+
+
+def reset_channel_session(channel_id: str) -> None:
+    """Forget everything a previous run left in this channel (patched flag, live
+    artifact, recap canvas, stop flag) so the next trigger starts the story clean.
+    The scenario lock is re-set by the caller."""
+    _PATCHED_CHANNELS.discard(channel_id)
+    _CHANNEL_ARTIFACT.pop(channel_id, None)
+    _CHANNEL_RECAP_CANVAS.pop(channel_id, None)
+    _STOPPED_CHANNELS.discard(channel_id)
     _save_state()
 
 

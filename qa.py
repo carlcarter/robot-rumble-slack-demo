@@ -863,18 +863,19 @@ def _run_self_test() -> int:
                 and "**" not in sc.thinking_line(a)
                 for a in ("check", "patch", "metrics", "recap"))),
         ]
-        # Human participants: 1–2 people (name + email_stem), and every beat names
+        # Human participants: 1–4 people (name + email_stem), and every beat names
         # one of them with a valid phase. This is what makes "humans + Claude" show.
+        from listeners.events.slack_code import BEAT_PHASES as _BEAT_PHASES
         _parts = getattr(sc, "PARTICIPANTS", None) or []
         _pnames = {p.get("name") for p in _parts if isinstance(p, dict)}
         _beats = sc.participant_beats() if callable(getattr(sc, "participant_beats", None)) else []
         common += [
-            ("PARTICIPANTS is 1–2 people", 1 <= len(_parts) <= 2),
+            ("PARTICIPANTS is 1–4 people", 1 <= len(_parts) <= 4),
             ("each participant has name + email_stem",
              all(isinstance(p, dict) and p.get("name") and p.get("email_stem") for p in _parts)),
             ("participant_beats non-empty", isinstance(_beats, list) and len(_beats) >= 1),
             ("every beat: valid phase, non-empty text, name ∈ PARTICIPANTS",
-             all(isinstance(b, dict) and b.get("phase") in ("arrival", "on_artifacts")
+             all(isinstance(b, dict) and b.get("phase") in _BEAT_PHASES
                  and b.get("text") and b.get("name") in _pnames for b in _beats)),
             ("has an arrival beat (the stall)", any(b.get("phase") == "arrival" for b in _beats)),
             ("beats have no double-asterisk bold",
@@ -936,6 +937,33 @@ def _run_self_test() -> int:
             fail += 1
         print(f"[{status}] scenario.billing_webhook/{label}")
 
+    # robot_red_card specifics: the multi-person review loop is the point, and the
+    # numbers must agree across reports, dashboard and recap.
+    rr = load_scenario("robot_red_card")
+    _rr_phases = {b["phase"] for b in rr.participant_beats()}
+    _rr_r = rr.REPLAY
+    _rr_dash = str(rr.dashboard_blocks())
+    rr_checks = [
+        ("3+ people in the cast", len(rr.PARTICIPANTS) >= 3),
+        ("review-loop beats present",
+         {"on_artifacts", "on_check_fail", "on_patch"}.issubset(_rr_phases)),
+        ("diff only at open (Python diff, no live HTML)", rr.ARTIFACTS == {"diff"}),
+        ("base diff halts on first read (the flaw)", "needed = 1 if critical" in rr.base_diff()),
+        ("patch keeps the confirm and crawls", "crawl_speed" in rr.patch_diff()
+         and "needed = 1" not in rr.patch_diff()),
+        ("fail report names the false stops", f"{_rr_r['glare_frames']} times" in rr.check_fail_report()),
+        ("pass report names the stop distance", f"{_rr_r['stop_cm_after']} cm" in rr.check_pass_report()),
+        ("dashboard + recap agree on stop distance",
+         f"{_rr_r['stop_cm_after']} cm" in _rr_dash
+         and f"{_rr_r['stop_cm_after']} cm" in rr.recap_canvas()),
+        ("PR chip has no fake PR number", "/pull/" not in rr.PR_URL),
+    ]
+    for label, cond in rr_checks:
+        status = "PASS" if cond else "FAIL"
+        if not cond:
+            fail += 1
+        print(f"[{status}] scenario.robot_red_card/{label}")
+
     # ---- Code-action recognizer (mention-keyword trigger for the demo beats) --
     from listeners.events.slack_code import recognize_code_action
 
@@ -951,6 +979,11 @@ def _run_self_test() -> int:
         ("dashboard", "show me the dashboard", "metrics"),
         ("is it working", "is it actually working?", "metrics"),
         ("normal question", "why did you choose the durable queue?", None),
+        # robot_red_card's scripted phrasings (docs/robot-rumble/RUNBOOK.md).
+        ("track replay (robot)", "run the track replay", "check"),
+        ("patch it (robot)", "patch it", "patch"),
+        ("numbers (robot)", "show me the numbers", "metrics"),
+        ("postmortem (robot)", "write the postmortem", "recap"),
         ("plain chat", "thanks, this looks great", None),
         # New-scenario check phrasings must map to "check" (keep in step with the
         # scenarios' CHECK_LABELs: load-test / flake-stability / migration-safety).
@@ -1593,6 +1626,9 @@ def _run_self_test() -> int:
         ("this test keeps failing intermittently, everyone just hits re-run", "flaky_test"),
         ("add a last_login_at column to users, backfill it, and expose it on /me", "sql_migration"),
         ("write the migration to add a column and backfill it safely", "sql_migration"),
+        # Robot Rumble: the opener, and a red-card line that also says "incident".
+        ("fix the late stop on red cards in line_follower.py", "robot_red_card"),
+        ("red card incident on Edinburgh — it stopped too late", "robot_red_card"),
     ]
     for text, want in route_fixtures:
         got = route_scenario(text)
@@ -1610,6 +1646,7 @@ def _run_self_test() -> int:
         "roll back the payment-service deploy and fix the retry storm",
         "the login_redirect test is flaky, find the root cause and fix it for real",
         "add a last_login_at column to users, backfill it, and expose it on /me",
+        "fix the late stop on red cards in line_follower.py",
     ]
     for text in gate_openers:
         gated = is_coding_task(text, _gate_cfg)

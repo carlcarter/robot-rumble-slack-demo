@@ -46,15 +46,16 @@ fi
 # to their own `claude` CLI login. Never errors on a missing gateway.
 # ----------------------------------------------------------------------------
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+# Export the WHOLE env block from settings.json — exactly what makes Claude Code
+# itself work on this machine. The bot drives the claude CLI with
+# setting_sources=[] (it never reads settings.json), so without this the CLI has
+# no gateway credentials and replies "Not logged in · Please run /login".
+# (The original picked out a fixed list of Bedrock keys, which missed gateways
+# configured via ANTHROPIC_BASE_URL / ANTHROPIC_CUSTOM_HEADERS.)
 if [ -f "$CLAUDE_SETTINGS" ] && command -v jq >/dev/null 2>&1 && \
-   [ -n "$(jq -r '.env.ANTHROPIC_BEDROCK_BASE_URL // empty' "$CLAUDE_SETTINGS")" ]; then
-  export CLAUDE_CODE_USE_BEDROCK=$(jq -r '.env.CLAUDE_CODE_USE_BEDROCK // "1"' "$CLAUDE_SETTINGS")
-  export ANTHROPIC_BEDROCK_BASE_URL=$(jq -r '.env.ANTHROPIC_BEDROCK_BASE_URL' "$CLAUDE_SETTINGS")
-  export ANTHROPIC_AUTH_TOKEN=$(jq -r '.env.ANTHROPIC_AUTH_TOKEN // empty' "$CLAUDE_SETTINGS")
-  export ANTHROPIC_MODEL=$(jq -r '.env.ANTHROPIC_MODEL // empty' "$CLAUDE_SETTINGS")
-  export NODE_EXTRA_CA_CERTS=$(jq -r '.env.NODE_EXTRA_CA_CERTS // empty' "$CLAUDE_SETTINGS")
-  export CLAUDE_CODE_SKIP_BEDROCK_AUTH=$(jq -r '.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH // "1"' "$CLAUDE_SETTINGS")
-  echo "[run.sh] Bedrock gateway env loaded from settings.json (model=${ANTHROPIC_MODEL:-unset})"
+   [ "$(jq -r '(.env // {}) | length' "$CLAUDE_SETTINGS")" != "0" ]; then
+  eval "$(jq -r '.env | to_entries[] | "export \(.key)=\(.value | tostring | @sh)"' "$CLAUDE_SETTINGS")"
+  echo "[run.sh] Claude gateway env loaded from settings.json ($(jq -r '.env | keys | length' "$CLAUDE_SETTINGS") vars; bot model=${CLAUDE_AI_MODEL:-from .env})"
 else
   echo "[run.sh] No Bedrock gateway env found — using your local \`claude\` CLI login."
 fi
@@ -117,6 +118,23 @@ resp = _api("apps.manifest.update", {"app_id": app_id, "manifest": json.dumps(li
 print(f'[run.sh] manifest reconcile: {"ok" if resp.get("ok") else resp}', flush=True)
 PYEOF
 ) &
+
+# DIRECT mode (default): run the bot as the app in tokens.json, with its own
+# xoxb/xapp tokens. `slack run` instead runs a separate "<name> (local)" dev app
+# with ITS tokens — so mentions of the real app (the one invited to your
+# channel) never reach this process. Set RUN_VIA_SLACK_CLI=1 to use slack run.
+if [ -z "${RUN_VIA_SLACK_CLI:-}" ]; then
+  eval "$(python3 -c "
+import json, shlex
+b = next(iter(json.load(open('tokens.json'))['bots'].values()))
+print('export SLACK_BOT_TOKEN=' + shlex.quote(b['bot_token']))
+print('export SLACK_APP_TOKEN=' + shlex.quote(b['app_token']))
+")"
+  echo "[run.sh] Direct mode: running as app $APP_ID ($NAME) from tokens.json."
+  PY="$ROOT/.venv/bin/python"
+  [ -x "$PY" ] || PY=python3
+  exec "$PY" app.py
+fi
 
 if [ -n "$TEAM_ID" ]; then
   exec slack run -w "$WORKSPACE_ID" --org-workspace-grant "$TEAM_ID" --force

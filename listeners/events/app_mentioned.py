@@ -21,7 +21,13 @@ from listeners.events.slack_code import (
     run_code_action,
     run_faq_edit,
     run_slack_code_session,
+    run_stage_session,
 )
+from scenarios import route_scenario
+
+# Stories that run IN the presenter's own channel when triggered there (stage
+# mode), rather than spawning a new code channel.
+STAGE_SCENARIOS = frozenset({"robot_red_card"})
 from listeners.events.slack_tag import run_tag_session, run_tag_followup
 from agent import tagsession
 from scenarios import is_seeded
@@ -115,6 +121,37 @@ async def handle_app_mentioned(
         #
         # is_code_channel never raises (False on error), so it can't break the path.
         if _SLACK_CODE_CFG.enabled:
+            # (0) Stage mode: the presenter invited the bot into their own channel.
+            # A story trigger (re)starts the scripted session right here — no new
+            # channel — and the story's beat phrases ("run the track replay",
+            # "patch it", …) drive it. Checked BEFORE is_code_channel so it also
+            # works when the presenter's channel is itself a code channel. Only
+            # top-level mentions; a mention inside a thread falls through.
+            stage_slug = route_scenario(cleaned_text) if thread_ts == event["ts"] else "freeform"
+            if stage_slug in STAGE_SCENARIOS:
+                logger.warning("app_mention GATE: channel=%s stage trigger → %s (in place)", channel_id, stage_slug)
+                await run_stage_session(
+                    client=client, logger=logger, cfg=_SLACK_CODE_CFG,
+                    task_text=cleaned_text, channel_id=channel_id,
+                    message_ts=event["ts"], user_id=user_id,
+                )
+                return
+            if thread_ts == event["ts"] and slackcode.is_stage_channel(channel_id):
+                action = recognize_code_action(cleaned_text)
+                if action:
+                    logger.warning("app_mention GATE: channel=%s stage action=%s", channel_id, action)
+                    await run_code_action(client, logger, _SLACK_CODE_CFG, channel_id, action)
+                    return
+                # Anything else: a normal answer, threaded under the question, but
+                # in the channel's story session (primed with provenance) so
+                # "why did you…?" works. Never the code-channel artifact path.
+                await _reply_in_stage_channel(
+                    client=client, logger=logger, say=say, say_stream=say_stream,
+                    channel_id=channel_id, cleaned_text=cleaned_text,
+                    message_ts=event["ts"], user_id=user_id,
+                )
+                return
+
             in_code_channel = await slackcode.is_code_channel(client, channel_id)
             if in_code_channel:
                 # In-session mention: answer top-level, resuming the channel's
@@ -257,6 +294,42 @@ async def handle_app_mentioned(
             f":warning: Claude AI→<@{user_id}> in <#{channel_id}> "
             f"persona=`claude_ai` listener_error={type(e).__name__}",
         )
+
+
+async def _reply_in_stage_channel(
+    *,
+    client: AsyncWebClient,
+    logger: Logger,
+    say: AsyncSay,
+    say_stream: AsyncSayStream,
+    channel_id: str,
+    cleaned_text: str,
+    message_ts: str,
+    user_id: str | None,
+) -> None:
+    """Answer an unscripted question in a stage channel: reply in a thread under
+    it, resuming the story's agent session (keyed channel-wide under thread_ts="",
+    which the session start primed with the scenario's provenance)."""
+    deps = AgentDeps(
+        client=client, user_id=user_id or "", channel_id=channel_id,
+        thread_ts=message_ts, message_ts=message_ts, user_token=None,
+    )
+    user_display_name = await resolve_user_name(client, user_id) if user_id else None
+    try:
+        response_text, new_session_id = await run_agent(
+            cleaned_text, session_id=session_store.get_session(channel_id, ""),
+            deps=deps, user_display_name=user_display_name, with_tools=False,
+        )
+    except Exception:
+        logger.exception("stage-channel run_agent failed in %s", channel_id)
+        await say(text="Sorry, I couldn't answer that just now. Try again?", thread_ts=message_ts)
+        return
+    await finalize_response(
+        response_text=response_text, client=client, say=say, say_stream=say_stream,
+        logger=logger, user_id=user_id, channel_id=channel_id, thread_ts=message_ts,
+    )
+    if new_session_id:
+        session_store.set_session(channel_id, "", new_session_id)
 
 
 async def _reply_in_code_channel(

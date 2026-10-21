@@ -42,6 +42,11 @@ class SessionStore:
             }
             self._cleanup()
 
+    def clear_session(self, channel_id: str, thread_ts: str) -> None:
+        """Forget the session for a thread (the next turn starts fresh)."""
+        with self._lock:
+            self._store.pop((channel_id, thread_ts), None)
+
     def _cleanup(self) -> None:
         """Remove expired entries and enforce max entry limit."""
         now = time.time()

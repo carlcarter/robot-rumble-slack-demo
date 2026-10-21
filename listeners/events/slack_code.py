@@ -20,6 +20,7 @@ surface for now.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from logging import Logger
@@ -328,11 +329,18 @@ async def _publish_dashboard(client: AsyncWebClient, channel_id: str, scenario) 
     blocks = scenario.dashboard_blocks()
     if validate_blocks(blocks):
         return None  # malformed — skip the tab rather than post a broken view
-    return await slackcode.set_view(
+    result = await slackcode.set_view(
         client, channel_id,
         view_type="block_kit", view_key="dashboard", name="Dashboard",
         blocks=blocks,
     )
+    if not result.ok and slackcode.is_stage_channel(channel_id):
+        # An ordinary channel has no tabs: post the dashboard as a message instead.
+        try:
+            await client.chat_postMessage(channel=channel_id, text="Dashboard", blocks=blocks)
+        except Exception:  # noqa: BLE001 — best-effort fallback, but say why
+            logging.getLogger("claude-ai-bot").warning("stage dashboard fallback post failed", exc_info=True)
+    return result
 
 
 async def _publish_diff(
@@ -347,10 +355,22 @@ async def _publish_diff(
         diff = scenario.faq_diff()
     else:
         diff = scenario.patch_diff() if patched else scenario.base_diff()
-    return await slackcode.set_view(
+    result = await slackcode.set_view(
         client, channel_id,
         view_type="diff", content=diff, base_branch="main", head_branch=branch,
     )
+    if not result.ok and slackcode.is_stage_channel(channel_id):
+        # An ordinary channel has no Code tab: post the diff as a code block.
+        # markdown_text only: Slack rejects it alongside `text` (markdown_text_conflict).
+        title = "Patched diff" if patched else "First pass"
+        try:
+            await client.chat_postMessage(
+                channel=channel_id,
+                markdown_text=f"*{title}* on `{branch}`\n```diff\n{diff.rstrip()}\n```",
+            )
+        except Exception:  # noqa: BLE001 — best-effort fallback, but say why
+            logging.getLogger("claude-ai-bot").warning("stage diff fallback post failed", exc_info=True)
+    return result
 
 
 async def _report_view_results(client, logger, channel_id, results) -> None:
@@ -432,8 +452,13 @@ def _branch_for(cfg: slackcode.SlackCodeConfig, channel_name: str, scenario=None
     was named channel_name_for(task) = channel_prefix + slug; the branch is the
     scenario's branch prefix + slug. Used by the action helpers (which only have
     the channel, not the original task_text)."""
-    slug = (channel_name or "").removeprefix(cfg.channel_name_prefix)
     prefix = _branch_prefix(cfg, scenario)
+    # A stage channel is named by the presenter, not after the task: use the
+    # story's own fixed branch so every beat in every run shows the same one.
+    stage_branch = getattr(scenario, "STAGE_BRANCH", None)
+    if stage_branch and not (channel_name or "").startswith(cfg.channel_name_prefix):
+        return stage_branch
+    slug = (channel_name or "").removeprefix(cfg.channel_name_prefix)
     return f"{prefix}{slug}"[:60] or f"{prefix}session"
 
 
@@ -485,12 +510,24 @@ async def _no_scripted_action(client: AsyncWebClient, channel_id: str) -> None:
 
 
 # --- Human participants: scripted chime-ins that show humans working WITH Claude -
-# 1–2 people from the origin thread (scenario.PARTICIPANTS) post short scripted
-# lines in the code channel. Two phases: "arrival" (as the channel opens — the
-# stall beat while Claude's first reply loads) and "on_artifacts" (just after the
-# diff/dashboard publish — reacting to what Claude shipped). Posted via
-# chat:write.customize (spoofed username); best-effort + stop-guarded. Only for
-# SEEDED stories with authored beats — freeform has no origin cast, so this no-ops.
+# 1–4 people from the origin thread (scenario.PARTICIPANTS) post short scripted
+# lines in the code channel. Phases: "arrival" (as the channel opens — the stall
+# beat while Claude's first reply loads), "on_artifacts" (just after the
+# diff/dashboard publish — reacting to what Claude shipped), and the review-loop
+# phases "on_check_fail" / "on_check_pass" / "on_patch" / "on_recap" (fired after
+# the matching scripted beat — a reviewer reacting to a failed check, approving a
+# patch, signing off). Posted via chat:write.customize (spoofed username);
+# best-effort + stop-guarded. Only for SEEDED stories with authored beats —
+# freeform has no origin cast, so this no-ops.
+
+# Every phase a beat may name. qa.py validates scenario beats against this set.
+BEAT_PHASES = frozenset({
+    "arrival", "on_artifacts", "on_check_fail", "on_check_pass", "on_patch", "on_recap",
+})
+
+# Gap between consecutive chime-ins in one phase, so a two-person exchange reads
+# as a conversation rather than a burst. Override with SLACK_CODE_BEAT_GAP_S.
+_BEAT_GAP_DEFAULT_S = 2.0
 
 
 def _participant_email_stems(scenario) -> list[str]:
@@ -525,6 +562,7 @@ async def _post_participant_beats(
     parts = getattr(scenario, "PARTICIPANTS", None) or []
     stem_by_name = {p.get("name"): p.get("email_stem") for p in parts if isinstance(p, dict)}
     reacted = False
+    posted_any = False
     for beat in beats:
         if not isinstance(beat, dict) or beat.get("phase") != phase:
             continue
@@ -534,6 +572,14 @@ async def _post_participant_beats(
         text = beat.get("text")
         if not name or not text:
             continue
+        if posted_any:
+            try:
+                await asyncio.sleep(_env_float("SLACK_CODE_BEAT_GAP_S", _BEAT_GAP_DEFAULT_S, min_value=0.0))
+            except Exception:  # noqa: BLE001 — the gap is cosmetic
+                pass
+            if slackcode.is_session_stopped(channel_id):
+                return
+        posted_any = True
         # Resolve the persona's real avatar so the chime-in shows their photo, not
         # the bot's. Best-effort — falls back to a neutral icon inside post_as_participant.
         icon_url = None
@@ -580,6 +626,11 @@ async def run_durability_check(
     await run_scripted_beat(
         client=client, logger=logger, channel_id=channel_id, scenario=scenario,
         action="check", work=_update_bar_for_check, verdict_markdown=report,
+    )
+    # Reviewer reaction to the verdict (e.g. the safety lead refusing to ship a
+    # change that failed its check). No-op for scenarios without these beats.
+    await _post_participant_beats(
+        client, logger, channel_id, scenario, "on_check_pass" if passed else "on_check_fail",
     )
     await audit_log(
         client,
@@ -633,12 +684,13 @@ async def run_patch(
                 ),
             )
 
-        tabs = "*Code* and *Preview*" if "preview" in artifacts else "the *Code* diff"
-        verdict = (
-            f":hammer_and_wrench: Applied the patch and re-ran the check — {tabs} "
-            "now show the fixed version.\n\n"
-            + scenario.check_pass_report()
-        )
+        if slackcode.is_stage_channel(channel_id):
+            lead = ":hammer_and_wrench: Applied the patch and re-ran the check — patched diff above.\n\n"
+        else:
+            tabs = "*Code* and *Preview*" if "preview" in artifacts else "the *Code* diff"
+            lead = (f":hammer_and_wrench: Applied the patch and re-ran the check — {tabs} "
+                    "now show the fixed version.\n\n")
+        verdict = lead + scenario.check_pass_report()
         await run_scripted_beat(
             client=client, logger=logger, channel_id=channel_id, scenario=scenario,
             action="patch", work=_do_patch_work, verdict_markdown=verdict,
@@ -646,6 +698,8 @@ async def run_patch(
     finally:
         if not slackcode.is_session_stopped(channel_id):
             await slackcode.set_session_status(client, channel_id, "active")
+    # Review sign-off on the patched change (reviewer approves, owner signs off).
+    await _post_participant_beats(client, logger, channel_id, scenario, "on_patch")
     await audit_log(
         client,
         f":hammer_and_wrench: Claude AI Slack Code patch applied in <#{channel_id}> — "
@@ -725,13 +779,14 @@ async def run_show_metrics(
     async def _do_metrics_work() -> None:
         await _publish_dashboard(client, channel_id, scenario)
 
+    if slackcode.is_stage_channel(channel_id):
+        verdict = ":bar_chart: Before vs after, from the replay — numbers above."
+    else:
+        verdict = (":bar_chart: The reliability numbers are in the *Dashboard* tab — "
+                   "before vs after the refactor. Scoped to this channel's members.")
     await run_scripted_beat(
         client=client, logger=logger, channel_id=channel_id, scenario=scenario,
-        action="metrics", work=_do_metrics_work,
-        verdict_markdown=(
-            ":bar_chart: The reliability numbers are in the *Dashboard* tab — "
-            "before vs after the refactor. Scoped to this channel's members."
-        ),
+        action="metrics", work=_do_metrics_work, verdict_markdown=verdict,
     )
 
 
@@ -824,6 +879,7 @@ async def run_make_recap(
         await client.chat_postMessage(channel=channel_id, markdown_text=verdict)
     if outcome["audit"] and not slackcode.is_session_stopped(channel_id):
         await audit_log(client, outcome["audit"])
+    await _post_participant_beats(client, logger, channel_id, scenario, "on_recap")
 
 
 # Keyword → action recognizer for the in-channel mention path. Deterministic
@@ -854,6 +910,7 @@ def recognize_code_action(text: str) -> str | None:
         "load test", "load-test", "loadtest", "under load", "at peak",  # checkout_incident
         "flake", "flaky", "stability", "stable",      # flaky_test
         "migration safety", "migration-safety", "safe to ship", "lock", "will it lock",  # sql_migration
+        "replay", "track-replay",                     # robot_red_card
     )):
         return "check"
     return None
@@ -1016,6 +1073,51 @@ async def run_slack_code_session(
         return True  # we own the channel; don't also reply in the origin thread
 
 
+async def run_stage_session(
+    *,
+    client: AsyncWebClient,
+    logger: Logger,
+    cfg: slackcode.SlackCodeConfig,
+    task_text: str,
+    channel_id: str,
+    message_ts: str,
+    user_id: str | None,
+) -> None:
+    """Run a scripted story IN the channel the presenter invited the bot to.
+
+    The single-presenter mode: no code channel is created and no other channel is
+    touched. Every artifact, chime-in and verdict lands in `channel_id`. A repeat
+    trigger in the same channel resets the story and runs it again, so one channel
+    serves a whole day of demos. The code-channel-only chrome (artifact tabs,
+    context bar, slash commands, session status) is attempted as usual and simply
+    no-ops if Slack rejects it for a non-code channel; the story itself is carried
+    by messages."""
+    session_key = f"stage_{channel_id}_{message_ts}".replace(".", "")
+    if not slackcode.mark_session_started(session_key):
+        logger.warning("stage session %s already started — skipping redelivery", session_key)
+        return
+    slackcode.mark_stage_channel(channel_id)
+    slackcode.reset_channel_session(channel_id)
+    # A fresh agent conversation per run, so run 5 doesn't remember runs 1–4.
+    session_store.clear_session(channel_id, "")
+    try:
+        await _run_session_body(
+            client=client, logger=logger, cfg=cfg, task_text=task_text,
+            code_channel_id=channel_id, origin_channel_id=channel_id,
+            origin_thread_ts=message_ts, origin_message_ts=message_ts,
+            user_id=user_id, branch_seed=session_key, stage=True,
+        )
+    except Exception:
+        logger.exception("stage session failed in %s", channel_id)
+        try:
+            await client.chat_postMessage(
+                channel=channel_id,
+                text="I hit a snag starting that. Mention me with the trigger again to retry.",
+            )
+        except Exception:
+            logger.exception("stage failure-notice post also failed in %s", channel_id)
+
+
 async def _run_session_body(
     *,
     client: AsyncWebClient,
@@ -1028,6 +1130,7 @@ async def _run_session_body(
     origin_message_ts: str,
     user_id: str | None,
     branch_seed: str,
+    stage: bool = False,
 ) -> bool:
     """The working-session body, run inside run_slack_code_session's guard so any
     unexpected error surfaces in the code channel rather than the origin thread."""
@@ -1064,6 +1167,8 @@ async def _run_session_body(
     # context bar + diff head_branch match the story. Computed after routing.
     _slug = slackcode.channel_name_for(task_text, cfg).removeprefix(cfg.channel_name_prefix)
     branch = f"{_branch_prefix(cfg, scenario)}{_slug}"[:60]
+    if stage and getattr(scenario, "STAGE_BRANCH", None):
+        branch = scenario.STAGE_BRANCH  # same branch the follow-up beats rebuild
     # Fresh session: clear per-channel state (patched flag, stored artifact) so a
     # reused channel id can't inherit a prior session's artifact/patch. (Scenario
     # is set above; leave it.)
@@ -1075,7 +1180,8 @@ async def _run_session_body(
     # both the channel name and the session title). The channel was auto-named from
     # a slug; a Title-Cased task reads better in the UI. Best-effort — never block
     # the session on a rename, and skip if the task text is empty.
-    _title = task_text.strip()
+    # Never rename a presenter's own (stage) channel.
+    _title = "" if stage else task_text.strip()
     if _title:
         _title = (_title[:1].upper() + _title[1:])[:120]
         await slackcode.rename_session(client, code_channel_id, _title)
@@ -1283,8 +1389,10 @@ async def _run_session_body(
 
     # Feed the origin conversation to the agent as context. Without this the code
     # channel is empty and the model gets a naked coding imperative — it can't know
-    # which repo/cron/target the channel was discussing and breaks persona.
-    transcript = await _fetch_origin_context(
+    # which repo/cron/target the channel was discussing and breaks persona. In a
+    # stage channel the "origin" is earlier runs of the same demo, so skip it: the
+    # story context comes from personas/_demo_context.md and the provenance.
+    transcript = "" if stage else await _fetch_origin_context(
         client, logger,
         origin_channel_id=origin_channel_id,
         origin_thread_ts=origin_thread_ts,
@@ -1401,6 +1509,18 @@ async def _run_session_body(
     if "dashboard" in _artifacts:
         tab_phrases.append("a *Dashboard* of the numbers")
     tabs_sentence = _join_phrases(tab_phrases)
+    if stage:
+        # A presenter's own channel: no archive offer (it's reused all day), and
+        # the next step is a mention, since stage channels ignore plain messages.
+        await client.chat_postMessage(
+            channel=code_channel_id,
+            markdown_text=(
+                f":white_check_mark: First pass up on `{branch}`. When you're ready, mention me "
+                f"and ask me to run the {scenario.CHECK_LABEL.replace('-', ' ')}."
+            ),
+        )
+        await slackcode.set_session_status(client, code_channel_id, "active")
+        return True
     summary = await client.chat_postMessage(
         channel=code_channel_id,
         markdown_text=(

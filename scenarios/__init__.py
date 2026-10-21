@@ -34,10 +34,13 @@ Contract every scenario module must satisfy (duck-typed; see ``_template.py``):
   provenance() -> dict[str, str]                      # decision → rationale (session-primed)
   render_provenance() -> str                          # provenance rendered for the first agent turn
   CHECK_LABEL: str                                    # e.g. "contrast" → /check-contrast
-  PARTICIPANTS: list[dict]                            # OPTIONAL — 1–2 origin-thread humans who
+  PARTICIPANTS: list[dict]                            # OPTIONAL — 1–4 origin-thread humans who
                                                       #   join the channel: {name, email_stem, role}
   participant_beats() -> list[dict]                   # OPTIONAL — their scripted chime-ins:
-                                                      #   {name, phase in {arrival,on_artifacts}, text}
+                                                      #   {name, phase, text}; phase is one of
+                                                      #   slack_code.BEAT_PHASES (arrival,
+                                                      #   on_artifacts, on_check_fail,
+                                                      #   on_check_pass, on_patch, on_recap)
 
 Not every scenario publishes every artifact — a backend refactor has no page to preview, a
 static-content change has no metrics. ARTIFACTS declares which tabs are real for the scenario;
@@ -59,6 +62,7 @@ from types import ModuleType
 _KNOWN = {
     "website_redesign", "billing_webhook", "freeform",
     "checkout_incident", "flaky_test", "sql_migration",
+    "robot_red_card",
 }
 _DEFAULT = "website_redesign"
 
@@ -91,6 +95,12 @@ def load_scenario(slug: str | None) -> ModuleType:
 # that didn't match a canned story falls through to `freeform` (build from
 # scratch) — the intent gate (is_coding_task) already decided it's a build task.
 _ROUTE_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    # Robot Rumble red card: matched FIRST — a red-card thread can easily say
+    # "incident", which would otherwise route to checkout_incident.
+    ("robot_red_card", (
+        "red card", "red-card", "line_follower", "line follower", "late stop",
+        "stopped too late", "stop sooner", "rvr", "robot rumble",
+    )),
     # billing first: "refactor the billing webhook" also contains "refactor", but
     # it's the billing story, so match its specific phrases before anything else.
     ("billing_webhook", (

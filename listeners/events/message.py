@@ -1,3 +1,4 @@
+import re
 from logging import Logger
 
 from slack_bolt.context.async_context import AsyncBoltContext
@@ -27,6 +28,24 @@ from scenarios import is_seeded
 # Slack Code gate, loaded once at import. Off unless SLACK_CODE_ENABLED is set,
 # so the code-channel follow-up branch is a no-op for every default bot.
 _SLACK_CODE_CFG = slackcode.load_slack_code_config()
+
+_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)")
+
+
+def from_other_app(event: dict) -> bool:
+    """True if another app or bot posted this (our own posts are filtered earlier)."""
+    return bool(event.get("bot_id") or event.get("bot_profile") or event.get("app_id"))
+
+
+def addressed_elsewhere(event: dict, bot_uid: str | None) -> bool:
+    """True if a message isn't for this bot: another app posted it, or it
+    @mentions a different user, bot or group (e.g. "@Robot Rumble Pit Crew …")."""
+    if from_other_app(event):
+        return True
+    text = event.get("text") or ""
+    if "<!subteam" in text:
+        return True
+    return bool(set(_MENTION_RE.findall(text)) - {bot_uid})
 
 
 async def handle_message(
@@ -79,6 +98,9 @@ async def handle_message(
         )
         if session is None and not tag_active:
             return
+        # Another app replying in a thread we're in (e.g. Pit Crew) isn't for us.
+        if not tag_active and from_other_app(event):
+            return
         if tag_active:
             await run_tag_followup(
                 client=client, logger=logger, channel_id=context.channel_id,
@@ -106,6 +128,13 @@ async def handle_message(
             and _SLACK_CODE_CFG.enabled
             and await slackcode.is_code_channel(client, context.channel_id)
         ):
+            # Not every message in a code channel is for us. Stay quiet when it's
+            # a stage channel (the presenter drives it with @mentions only), when
+            # another app posted it (e.g. the Pit Crew agent's replies), or when
+            # it @mentions someone else (a question for Pit Crew or a colleague).
+            if slackcode.is_stage_channel(context.channel_id) or addressed_elsewhere(event, bot_uid):
+                logger.info("code-channel message not for us — ignored (channel=%s)", context.channel_id)
+                return
             await _reply_in_code_channel_followup(
                 client=client,
                 logger=logger,

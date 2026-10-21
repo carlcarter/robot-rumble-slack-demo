@@ -3,14 +3,18 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-from slack_bolt.async_app import AsyncApp
-from slack_sdk.web.async_client import AsyncWebClient
 
-from agent.agent import log_model_check
-from listeners import register_listeners
-
+# Load .env BEFORE importing the bot: agent.agent (CLAUDE_AI_MODEL) and the
+# listeners (SLACK_CODE_ENABLED, via load_slack_code_config) read their settings
+# at import time, so loading afterwards silently ignored the file.
 load_dotenv(dotenv_path=".env", override=False)
+
+from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler  # noqa: E402
+from slack_bolt.async_app import AsyncApp  # noqa: E402
+from slack_sdk.web.async_client import AsyncWebClient  # noqa: E402
+
+from agent.agent import log_model_check  # noqa: E402
+from listeners import register_listeners  # noqa: E402
 
 logging.basicConfig(level=logging.DEBUG)
 
