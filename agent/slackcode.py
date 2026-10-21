@@ -1114,6 +1114,11 @@ def load_slack_code_config() -> SlackCodeConfig:
     _tag_env = os.environ.get("SLACK_TAG_ENABLED")
     cfg.tag_enabled = _truthy(_tag_env) if _tag_env is not None else cfg.enabled
     scenario = os.environ.get("SLACK_CODE_SCENARIO")
+    # Scripted-only: a channel whose story was forgotten (host restarted mid-run,
+    # state file wiped) falls back to the scripted story, not the website default,
+    # so "run the track replay" still works after a restart.
+    if not (scenario and scenario.strip()) and _truthy(os.environ.get("SCRIPTED_ONLY")):
+        scenario = os.environ.get("SCRIPTED_SCENARIO") or "robot_red_card"
     if scenario and scenario.strip():
         cfg.scenario = scenario.strip()
     kw = os.environ.get("SLACK_CODE_INTENT_KEYWORDS")
@@ -1398,9 +1403,17 @@ def clear_recap_canvas_id(channel_id: str) -> None:
 # channel (unlike a code channel, plain messages are left alone), so the room can
 # chat freely. DURABLE: the channel stays a stage after a bot restart.
 _STAGE_CHANNELS: set[str] = set(_STATE.get("stage", []))
-# Hosts with a wiped disk on restart (Heroku restarts dynos daily) lose the state
-# file, so stage channels can also be pinned by config: STAGE_CHANNEL_IDS=C0…,C0…
-_STAGE_CHANNELS |= {c.strip() for c in os.environ.get("STAGE_CHANNEL_IDS", "").split(",") if c.strip()}
+
+
+def _every_channel_is_a_stage() -> bool:
+    """Scripted-only hosting: EVERY channel the bot is in behaves as a stage.
+
+    No list to maintain (presenters spin up new code channels all day), and
+    nothing to lose when a host wipes its disk on restart (Heroku restarts dynos
+    daily, taking the state file with it). In scripted mode the bot has nothing
+    useful to say to un-mentioned chatter anyway, so @mention-only everywhere is
+    the right behaviour."""
+    return os.environ.get("SCRIPTED_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def mark_stage_channel(channel_id: str) -> None:
@@ -1411,8 +1424,9 @@ def mark_stage_channel(channel_id: str) -> None:
 
 
 def is_stage_channel(channel_id: str) -> bool:
-    """True if a scripted story has been started in this ordinary channel."""
-    return channel_id in _STAGE_CHANNELS
+    """True if a scripted story has been started in this channel (or, in
+    scripted-only mode, for every channel — see _every_channel_is_a_stage)."""
+    return bool(channel_id) and (_every_channel_is_a_stage() or channel_id in _STAGE_CHANNELS)
 
 
 def reset_channel_session(channel_id: str) -> None:
